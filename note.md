@@ -3,10 +3,9 @@
 #    MacOS: brew install ffmpeg
 #    Linux: sudo apt install ffmpeg
 
-# Cài các thư viện Python
-pip install faster-whisper moviepy tkinter
+# Cài các thư viện Python trong môi trường ảo
+python -m venv .venv
+.venv\Scripts\python -m pip install -r requirements.txt
 
-# **Quan trọng**: Tkinter đã có sẵn trong Python, nếu lỗi:
-# - Windows: Cài lại Python và chọn tùy chọn "tcl/tk"
-# - Linux: sudo apt install python3-tk
-# - MacOS: brew install python-tk
+# Chạy ứng dụng
+.venv\Scripts\python main.py
