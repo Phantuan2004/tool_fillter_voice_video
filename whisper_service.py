@@ -43,6 +43,21 @@ class WhisperService:
         ) from last_error
 
     def transcribe(self, audio_path):
-        """Nhận dạng audio và trả về các đoạn thoại cùng thông tin ngôn ngữ."""
-        segments, info = self.model.transcribe(audio_path, beam_size=5)
+        """Nhận dạng audio và trả về các đoạn thoại cùng thông tin ngôn ngữ.
+
+        vad_filter=True: Dùng VAD để bỏ qua đoạn im lặng, giữ đúng timestamp
+        thực tế trong video (thoại bắt đầu lúc 2-3s sẽ ghi đúng 2-3s, không
+        bị reset về 0s).
+        condition_on_previous_text=False: Tránh hallucination ở đoạn im lặng.
+        """
+        segments, info = self.model.transcribe(
+            audio_path,
+            beam_size=5,
+            vad_filter=True,
+            vad_parameters=dict(
+                min_silence_duration_ms=500,   # im lặng >= 0.5s mới cắt
+                speech_pad_ms=200,             # thêm 200ms đệm quanh thoại
+            ),
+            condition_on_previous_text=False,
+        )
         return segments, info
