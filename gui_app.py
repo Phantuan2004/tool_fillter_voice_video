@@ -25,7 +25,8 @@ from PyQt6.QtWidgets import (
 )
 
 from media_utils import extract_audio, find_video_files, remove_file
-from srt_writer import write_srt
+from srt_writer import segments_to_list, write_srt
+from translator_service import LANGUAGE_CODES, TranslatorService
 from whisper_service import WhisperService
 
 
@@ -100,6 +101,7 @@ class VideoToSRTApp(QMainWindow):
         config_layout = QVBoxLayout(config_group)
         config_layout.setContentsMargins(16, 20, 16, 14)
         config_layout.setSpacing(9)
+
         model_label = QLabel("Model Whisper")
         self.model_size = QComboBox()
         self.model_size.addItems(["tiny", "base", "small", "medium"])
@@ -109,6 +111,19 @@ class VideoToSRTApp(QMainWindow):
         config_layout.addWidget(model_label)
         config_layout.addWidget(self.model_size)
         config_layout.addWidget(model_hint)
+
+        # ── Dịch thoại ──────────────────────────────────────────────────────
+        translate_label = QLabel("Dịch thoại sang")
+        self.translate_lang = QComboBox()
+        self.translate_lang.addItem("Không dịch")
+        for lang_name in LANGUAGE_CODES:
+            self.translate_lang.addItem(lang_name)
+        translate_hint = QLabel("Sẽ xuất thêm file SRT đã dịch")
+        translate_hint.setObjectName("muted")
+        config_layout.addWidget(translate_label)
+        config_layout.addWidget(self.translate_lang)
+        config_layout.addWidget(translate_hint)
+
         config_layout.addStretch()
 
         settings_row.addWidget(folder_group, 3)
@@ -308,11 +323,18 @@ class VideoToSRTApp(QMainWindow):
             QMessageBox.warning(self, "Cảnh báo", "Không có video nào để xử lý!")
             return
 
+        translate_choice = self.translate_lang.currentText()
+        translate_info = (
+            f"Dịch thoại sang: {translate_choice}"
+            if translate_choice != "Không dịch"
+            else "Dịch thoại: Không dịch"
+        )
         answer = QMessageBox.question(
             self,
             "Xác nhận xử lý",
             f"Bạn muốn xử lý {len(self.video_files)} video?\n\n"
             f"Model: {self.model_size.currentText()}\n"
+            f"{translate_info}\n"
             f"Thư mục lưu: {self.output_folder.text()}",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
@@ -332,20 +354,28 @@ class VideoToSRTApp(QMainWindow):
         self.is_processing = True
         self.process_button.setEnabled(False)
         self.add_log("Bắt đầu xử lý video...", "info")
+        translate_choice = self.translate_lang.currentText()
+        translate_to = translate_choice if translate_choice != "Không dịch" else None
         worker = threading.Thread(
             target=self._process_worker,
-            args=(list(self.video_files), self.model_size.currentText(), output_dir),
+            args=(list(self.video_files), self.model_size.currentText(), output_dir, translate_to),
             daemon=True,
         )
         worker.start()
 
-    def _process_worker(self, video_files, model_size, output_dir):
+    def _process_worker(self, video_files, model_size, output_dir, translate_to=None):
         processed_count = 0
         try:
             self.log_signal.emit(f"Đang tải model {model_size}...", "info")
             self.progress_signal.emit(0, f"Đang tải model {model_size}...")
             whisper = WhisperService(model_size, self.log_signal.emit)
             self.log_signal.emit(f"Model {model_size} đã sẵn sàng", "success")
+
+            # Khởi tạo dịch vụ dịch nếu người dùng chọn ngôn ngữ đích
+            translator = None
+            if translate_to:
+                self.log_signal.emit(f"Chế độ dịch: {translate_to}", "info")
+                translator = TranslatorService(translate_to, self.log_signal.emit)
 
             total_videos = len(video_files)
             for index, video_path in enumerate(video_files, 1):
@@ -355,15 +385,39 @@ class VideoToSRTApp(QMainWindow):
                 audio_path = output_dir / f"{video_name}_temp.wav"
                 srt_path = output_dir / f"{video_name}.srt"
 
+                # Xác định suffix ngôn ngữ cho file dịch (ví dụ: _vi, _en, _ja, _ko)
+                lang_code = LANGUAGE_CODES.get(translate_to, "") if translate_to else ""
+                srt_translated_path = output_dir / f"{video_name}_{lang_code}.srt" if lang_code else None
+
                 try:
                     if not extract_audio(str(video_path), str(audio_path)):
                         self.log_signal.emit(f"Không thể trích xuất audio từ {video_name}", "error")
                         continue
+
                     self.log_signal.emit(f"Đang nhận dạng giọng nói: {video_name}", "info")
-                    segments, info = whisper.transcribe(str(audio_path))
-                    write_srt(segments, str(srt_path))
+                    raw_segments, info = whisper.transcribe(str(audio_path))
+
+                    # Vật chất hoá generator → list of dict (cần cho cả ghi và dịch)
+                    seg_list = segments_to_list(raw_segments)
+
+                    # Ghi file SRT gốc
+                    write_srt(seg_list, str(srt_path))
+                    self.log_signal.emit(
+                        f"Đã tạo: {video_name}.srt (Ngôn ngữ: {info.language})", "success"
+                    )
+
+                    # Dịch và ghi file SRT dịch (nếu được chọn)
+                    if translator and srt_translated_path:
+                        self.log_signal.emit(
+                            f"Đang dịch {len(seg_list)} đoạn sang {translate_to}...", "info"
+                        )
+                        translated_segs = translator.translate_segments(seg_list)
+                        write_srt(translated_segs, str(srt_translated_path))
+                        self.log_signal.emit(
+                            f"Đã tạo: {video_name}_{lang_code}.srt (bản dịch)", "success"
+                        )
+
                     processed_count += 1
-                    self.log_signal.emit(f"Đã tạo: {video_name}.srt (Ngôn ngữ: {info.language})", "success")
                 finally:
                     remove_file(audio_path)
 
